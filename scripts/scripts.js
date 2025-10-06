@@ -11,7 +11,11 @@ import {
   loadSection,
   loadSections,
   loadCSS,
+  toClassName,
+  getMetadata,
 } from './aem.js';
+
+const TEMPLATE_LIST = ['article']
 
 /**
  * Builds hero block and prepends to main in a new section.
@@ -41,29 +45,65 @@ async function loadFonts() {
 }
 
 /**
+ * @typedef Template
+ * @property {function} [loadLazy] If provided, will be called in the lazy phase. Expects a
+ *  single argument: the document's <main> HTMLElement.
+ * @property {function} [loadEager] If provided, will be called in the eager phase. Expects a single
+ *  argument: the document's <main> HTMLElement.
+ * @property {function} [loadDelayed] If provided, will be called in the delayed phase. Expects a
+ *  single argument: the document's <main> HTMLElement.
+ */
+
+/**
+ * @type {Template}
+ */
+let universalTemplate;
+/**
+ * @type {Template}
+ */
+let template;
+
+/**
+ * Invokes a template's eager method, if specified.
+ * @param {Template} [toLoad] Template whose eager method should be invoked.
+ * @param {HTMLElement} main The document's main element.
+ */
+async function loadEagerTemplate(toLoad, main) {
+  if (toLoad && toLoad.loadEager) {
+    await toLoad.loadEager(main);
+  }
+}
+
+/**
+ * Invokes a template's lazy method, if specified.
+ * @param {Template} [toLoad] Template whose lazy method should be invoked.
+ * @param {HTMLElement} main The document's main element.
+ */
+async function loadLazyTemplate(toLoad, main) {
+  if (toLoad) {
+    if (toLoad.loadLazy) {
+      await toLoad.loadLazy(main);
+    }
+  }
+}
+
+/**
+ * Invokes a template's delayed method, if specified.
+ * @param {Template} [toLoad] Template whose delayed method should be invoked.
+ * @param {HTMLElement} main The document's main element.
+ */
+async function loadDelayedTemplate(toLoad, main) {
+  if (toLoad && toLoad.loadDelayed) {
+    await toLoad.loadDelayed(main);
+  }
+}
+
+/**
  * Builds all synthetic blocks in a container element.
  * @param {Element} main The container element
  */
 function buildAutoBlocks(main) {
   try {
-    // auto block `*/fragments/*` references
-    const fragments = main.querySelectorAll('a[href*="/fragments/"]');
-    if (fragments.length > 0) {
-      // eslint-disable-next-line import/no-cycle
-      import('../blocks/fragment/fragment.js').then(({ loadFragment }) => {
-        fragments.forEach(async (fragment) => {
-          try {
-            const { pathname } = new URL(fragment.href);
-            const frag = await loadFragment(pathname);
-            fragment.parentElement.replaceWith(frag.firstElementChild);
-          } catch (error) {
-            // eslint-disable-next-line no-console
-            console.error('Fragment loading failed', error);
-          }
-        });
-      });
-    }
-
     buildHeroBlock(main);
   } catch (error) {
     // eslint-disable-next-line no-console
@@ -95,6 +135,7 @@ async function loadEager(doc) {
   const main = doc.querySelector('main');
   if (main) {
     decorateMain(main);
+    await decorateTemplates(main);
     document.body.classList.add('appear');
     await loadSection(main.querySelector('.section'), waitForFirstImage);
   }
@@ -102,7 +143,7 @@ async function loadEager(doc) {
   try {
     /* if desktop (proxy for fast connection) or fonts already loaded, load fonts.css */
     if (window.innerWidth >= 900 || sessionStorage.getItem('fonts-loaded')) {
-      loadFonts();
+      // loadFonts();
     }
   } catch (e) {
     // do nothing
@@ -116,6 +157,7 @@ async function loadEager(doc) {
 async function loadLazy(doc) {
   const main = doc.querySelector('main');
   await loadSections(main);
+  await loadLazyTemplate(template, main);
 
   const { hash } = window.location;
   const element = hash ? doc.getElementById(hash.substring(1)) : false;
@@ -123,9 +165,43 @@ async function loadLazy(doc) {
 
   loadHeader(doc.querySelector('header'));
   loadFooter(doc.querySelector('footer'));
-
+loadCSS(`${window.hlx.codeBasePath}/styles/styles.css`);
   loadCSS(`${window.hlx.codeBasePath}/styles/lazy-styles.css`);
-  loadFonts();
+  // loadFonts();
+}
+
+async function decorateTemplates(main) {
+  try {
+    // Load the universal template for every page
+    // universalTemplate = await loadTemplate('universal', main);
+
+    const templateName = toClassName(getMetadata('template'));
+    const templates = TEMPLATE_LIST;
+    if (templates.includes(templateName)) {
+      template = await loadTemplate(templateName, main);
+    }
+  } catch (error) {
+    // eslint-disable-next-line no-console
+    console.error('template loading failed', error);
+  }
+}
+
+async function loadTemplate(templateName, main) {
+  const cssLoaded = loadCSS(
+    `${window.hlx.codeBasePath}/templates/${templateName}/${templateName}-build.css`,
+  );
+  let module;
+  const decorateComplete = new Promise((resolve) => {
+    (async () => {
+      module = await import(
+        `../templates/${templateName}/${templateName}-build.js`
+      );
+      await loadEagerTemplate(module, main);
+      resolve();
+    })();
+  });
+  await Promise.all([cssLoaded, decorateComplete]);
+  return module;
 }
 
 /**
@@ -134,7 +210,7 @@ async function loadLazy(doc) {
  */
 function loadDelayed() {
   // eslint-disable-next-line import/no-cycle
-  window.setTimeout(() => import('./delayed.js'), 3000);
+  window.setTimeout(() => import('./delayed.js'), 0);
   // load anything that can be postponed to the latest here
 }
 
